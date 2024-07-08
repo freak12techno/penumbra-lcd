@@ -2,6 +2,8 @@
 extern crate rocket;
 
 use rocket::serde::json::{json, Value};
+use rocket::State;
+use clap::Parser;
 
 use penumbra_proto::{
     core::app::v1::{
@@ -23,11 +25,20 @@ use penumbra_stake::{IdentityKey, Uptime};
 
 use tonic::transport::{Channel, ClientTlsConfig};
 
-const NODE_URL: &str = "https://grpc.penumbra.silentvalidator.com";
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long)]
+    node: String,
+
+    #[arg(short, long, default_value_t = 8000)]
+    port: i32,
+}
 
 #[get("/cosmos/slashing/v1beta1/params")]
-async fn slashing_params() -> Value {
-    let channel = Channel::from_shared(NODE_URL.to_string())
+async fn slashing_params(args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
         .unwrap()
         .tls_config(ClientTlsConfig::new())
         .unwrap()
@@ -62,8 +73,8 @@ async fn slashing_params() -> Value {
 }
 
 #[get("/cosmos/staking/v1beta1/params")]
-async fn staking_params() -> Value {
-    let channel = Channel::from_shared(NODE_URL.to_string())
+async fn staking_params(args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
         .unwrap()
         .tls_config(ClientTlsConfig::new())
         .unwrap()
@@ -86,7 +97,7 @@ async fn staking_params() -> Value {
 
     json!({
         "params": {
-            "unbonding_time": "1814400s",
+            "unbonding_time": "1814400s", // 21 days
             "max_validators": stake_params.active_validator_limit,
             "max_entries": 7,
             "historical_entries": 10000,
@@ -97,10 +108,10 @@ async fn staking_params() -> Value {
 
 
 #[get("/cosmos/slashing/v1beta1/signing_infos/<identity_key>")]
-async fn signing_info(identity_key: &str) -> Value {
+async fn signing_info(identity_key: &str, args: &State<Args>) -> Value {
     let identity_key_parsed = identity_key.parse::<IdentityKey>().unwrap();
 
-    let channel = Channel::from_shared(NODE_URL.to_string())
+    let channel = Channel::from_shared(args.node.to_string())
         .unwrap()
         .tls_config(ClientTlsConfig::new())
         .unwrap()
@@ -138,12 +149,17 @@ async fn signing_info(identity_key: &str) -> Value {
 
 #[launch]
 fn rocket() -> _ {
-    rocket::build().mount(
-        "/",
-        routes![
-            staking_params,
-            slashing_params,
-            signing_info,
-        ],
-    )
+    let args = Args::parse();
+
+    rocket::build()
+        .configure(rocket::Config::figment().merge(("port", args.port)))
+        .manage(args)
+        .mount(
+            "/",
+            routes![
+                staking_params,
+                slashing_params,
+                signing_info,
+            ],
+        )
 }

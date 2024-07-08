@@ -9,3 +9,4 @@ penumbra-proto = { git = "https://github.com/penumbra-zone/penumbra", features =
 penumbra-stake = { git = "https://github.com/penumbra-zone/penumbra" }
 tonic = { version = "0.10", features = ["tls-webpki-roots", "tls"] }
 serde_json = { version = "1.0.96" }
+clap = { version = "4.5.8", features = ["derive"] }

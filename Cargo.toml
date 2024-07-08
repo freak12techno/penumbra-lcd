@@ -1,0 +1,11 @@
+[package]
+name = "penumbra-lcd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rocket = { version = "=0.5.1", features = ["json", "tls"] }
+penumbra-proto = { git = "https://github.com/penumbra-zone/penumbra", features = ["rpc"] }
+penumbra-stake = { git = "https://github.com/penumbra-zone/penumbra" }
+tonic = { version = "0.10", features = ["tls-webpki-roots", "tls"] }
+serde_json = { version = "1.0.96" }

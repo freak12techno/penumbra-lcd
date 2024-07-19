@@ -1,34 +1,49 @@
 #[macro_use]
 extern crate rocket;
 
+use penumbra_proto::util::tendermint_proxy::v1::SyncInfo;
 use rocket::serde::json::{json, Value};
 use rocket::State;
 use clap::Parser;
 use futures::TryStreamExt;
+use chrono::DateTime;
 
 use penumbra_proto::{
     core::app::v1::{
-        query_service_client::QueryServiceClient as AppQueryServiceClient, AppParametersRequest, AppParameters,
-    },
-    core::component::sct::v1::{
-        query_service_client::QueryServiceClient as SctQueryServiceClient, EpochByHeightRequest,
+        query_service_client::QueryServiceClient as AppQueryServiceClient,
+        AppParametersRequest,
+        AppParameters,
     },
     core::component::stake::v1::{
         query_service_client::QueryServiceClient as StakeQueryServiceClient,
         ValidatorInfoRequest,
         ValidatorUptimeRequest,        
     },
-    util::tendermint_proxy::v1::{
-        tendermint_proxy_service_client::TendermintProxyServiceClient, GetStatusRequest,
+    core::component::governance::v1::{
+        query_service_client::QueryServiceClient as GovernanceQueryServiceClient,
+        ProposalDataRequest,
+        ProposalDataResponse,
+        ProposalListRequest,
+        ProposalListResponse,
+        proposal_state::State as ProposalState,
+        proposal_outcome::Outcome,
+        proposal_state::Finished,
+        Proposal,
     },
+    util::tendermint_proxy::v1::{
+        tendermint_proxy_service_client::TendermintProxyServiceClient,
+        GetStatusRequest,
+        GetStatusResponse,
+        GetBlockByHeightRequest,
+        GetBlockByHeightResponse,
+    }
 };
 use penumbra_stake::{
     IdentityKey, Uptime,
-    validator::{self, Info, Status, Validator, ValidatorToml, BondingState, State as ValidatorState},
+    validator::{self, BondingState, State as ValidatorState},
 };
 
 use tonic::transport::{Channel, ClientTlsConfig};
-
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -230,6 +245,176 @@ async fn signing_info(identity_key: &str, args: &State<Args>) -> Value {
     })
 }
 
+async fn get_sync_info(channel: Channel) -> SyncInfo {
+    let mut tendermint_client = TendermintProxyServiceClient::new(channel.clone());
+    let status_data: GetStatusResponse = tendermint_client
+        .get_status(GetStatusRequest { })
+        .await
+        .unwrap()
+        .into_inner();
+
+    status_data.sync_info.unwrap()
+}
+
+async fn get_block_time(channel: Channel, latest_block_height: i64, latest_block_time: f64) -> f64 {
+    let mut tendermint_client = TendermintProxyServiceClient::new(channel.clone());
+
+    let older_block_data: GetBlockByHeightResponse = tendermint_client
+        .get_block_by_height(GetBlockByHeightRequest { height: latest_block_height - 100 })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let older_block_header = older_block_data.block.unwrap().header.unwrap();
+    let older_block_height = older_block_header.height;
+    let older_block_time: f64 = older_block_header.time.unwrap().seconds as f64;
+
+    let time_between_blocks = latest_block_time - older_block_time;
+    let blocks_diff = latest_block_height - older_block_height;
+
+    time_between_blocks / (blocks_diff as f64)
+}
+
+
+fn map_proposal(
+    proposal_id: u64,
+    proposal: Proposal,
+    state: ProposalState,
+    latest_block_height: i64,
+    latest_block_time: f64,
+    start_block_height: u64,
+    end_block_height: u64,
+    block_time: f64,
+) -> Value {
+    let state = match state {
+        ProposalState::Voting(_) => "PROPOSAL_STATUS_VOTING_PERIOD",
+        ProposalState::Finished(Finished { outcome: Some(value) }) => {
+            match value.outcome.unwrap() {
+                Outcome::Passed(_) => "PROPOSAL_STATUS_PASSED",
+                Outcome::Failed(_) => "PROPOSAL_STATUS_REJECTED",
+                _ => "ProposalStatus_PROPOSAL_STATUS_UNSPECIFIED"
+            }
+        },
+        _ => "ProposalStatus_PROPOSAL_STATUS_UNSPECIFIED"
+    };
+
+    let voting_start = latest_block_time
+        + ((latest_block_height - (start_block_height as i64)) as f64) * block_time;
+    let voting_end = latest_block_time
+        + ((latest_block_height - (end_block_height as i64)) as f64) * block_time;
+
+    json!({
+        "proposal_id": proposal_id.to_string(),
+        "content": {
+            "@type": "penumbra.core.component.governance.v1.Signaling",
+            "title": proposal.title,
+            "description": proposal.description,
+        },
+        "status": state,
+        "final_tally_result": {
+            "yes": "0",
+            "abstain": "0",
+            "no": "0",
+            "no_with_veto": "0"
+        },
+        "submit_time": "1970-01-01T00:00:00.000Z",
+        "deposit_end_time": "1970-01-01T00:00:00.000Z",
+        "total_deposit": [],
+        "voting_start_time": DateTime::from_timestamp(voting_start as i64, 0),
+        "voting_end_time": DateTime::from_timestamp(voting_end as i64, 0),
+    })
+}
+
+#[get("/cosmos/gov/v1beta1/proposals/<proposal_id>")]
+async fn proposal(proposal_id: u64, args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = GovernanceQueryServiceClient::new(channel.clone());
+    let proposal_data: ProposalDataResponse = client
+        .proposal_data(ProposalDataRequest { proposal_id: proposal_id })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sync_info = get_sync_info(channel.clone()).await;
+    let latest_block_height: i64 = (sync_info.latest_block_height) as i64;
+    let latest_block_time: f64 = sync_info.latest_block_time.unwrap().seconds as f64;
+    let block_time = get_block_time(channel.clone(), latest_block_height, latest_block_time).await;
+
+    let proposal = map_proposal(
+        proposal_id,
+        proposal_data.proposal.unwrap(),
+        proposal_data.state.unwrap().state.unwrap(),
+        latest_block_height,
+        latest_block_time,
+        proposal_data.start_block_height,
+        proposal_data.end_block_height,
+        block_time,
+    );
+
+    json!({
+        "proposal": proposal,
+    })
+}
+
+#[get("/cosmos/gov/v1beta1/proposals")]
+async fn proposals(args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = GovernanceQueryServiceClient::new(channel.clone());
+
+    let proposals: Vec<ProposalListResponse> = client
+        .proposal_list(ProposalListRequest { inactive: true })
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+
+    let sync_info = get_sync_info(channel.clone()).await;
+    let latest_block_height: i64 = (sync_info.latest_block_height) as i64;
+    let latest_block_time: f64 = sync_info.latest_block_time.unwrap().seconds as f64;
+    let block_time = get_block_time(channel.clone(), latest_block_height, latest_block_time).await;
+
+    let mut response: Vec<Value> = vec![];
+
+    for proposal in proposals {
+        let proposal_unwrapped = proposal.proposal.unwrap();
+        let proposal_mapped = map_proposal(
+            proposal_unwrapped.id,
+            proposal_unwrapped,
+            proposal.state.unwrap().state.unwrap(),
+            latest_block_height,
+            latest_block_time,
+            proposal.start_block_height,
+            proposal.end_block_height,
+            block_time,
+        );
+
+        response.push(proposal_mapped);
+    }
+
+    json!({
+        "proposals": response,
+        "pagination": {
+            "next_key": null,
+            "total": response.len().to_string(),
+        }
+    })
+}
 
 #[launch]
 fn rocket() -> _ {
@@ -245,6 +430,8 @@ fn rocket() -> _ {
                 staking_params,
                 slashing_params,
                 signing_info,
+                proposals,
+                proposal,
             ],
         )
 }

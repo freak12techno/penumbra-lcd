@@ -12,3 +12,5 @@ serde_json = { version = "1.0.96" }
 clap = { version = "4.5.8", features = ["derive"] }
 futures = { version = "0.3.28" }
 base64 = "0.13.0"
+prost = "0.13.1"
+chrono = "0.4.38"

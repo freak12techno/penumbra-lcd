@@ -6,6 +6,7 @@ use rocket::serde::json::{json, Value};
 use rocket::State;
 use clap::Parser;
 use futures::TryStreamExt;
+use std::net::IpAddr;
 use chrono::DateTime;
 
 use penumbra_proto::{
@@ -53,6 +54,9 @@ struct Args {
 
     #[arg(short, long, default_value_t = 8000)]
     port: i32,
+
+    #[arg(short, long, default_value_t = String::from("127.0.0.1"))]
+    bind: String,
 }
 
 #[get("/cosmos/staking/v1beta1/validators?<status>")]
@@ -60,7 +64,7 @@ async fn validators(status: Option<String>, args: &State<Args>) -> Value {
     let channel = Channel::from_shared(args.node.to_string())
         .unwrap()
         .tls_config(ClientTlsConfig::new())
-        .unwrap()
+       .unwrap()
         .connect()
         .await
         .unwrap();
@@ -420,8 +424,13 @@ async fn proposals(args: &State<Args>) -> Value {
 fn rocket() -> _ {
     let args = Args::parse();
 
+    let ip_addr: IpAddr = args.bind.parse().expect("Invalid IP address format");
+
     rocket::build()
-        .configure(rocket::Config::figment().merge(("port", args.port)))
+        .configure(rocket::Config::figment()
+                   .merge(("port", args.port))
+                   .merge(("address", ip_addr))
+        )
         .manage(args)
         .mount(
             "/",

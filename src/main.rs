@@ -452,7 +452,7 @@ async fn get_vote(voter: &str, proposal_id: u64, args: &State<Args>) -> status::
 
   let response = match validator_vote {
       None => {
-          status::Custom(rocket::http::Status::NotFound, Json(json!({
+          status::Custom(rocket::http::Status::BadRequest, Json(json!({
               "code": 3,
               "message": format!("voter: {} not found for proposal: {}", voter, proposal_id),
               "details": []
@@ -461,7 +461,7 @@ async fn get_vote(voter: &str, proposal_id: u64, args: &State<Args>) -> status::
       Some(vote) => {
           match &vote.vote {
               None => {
-                  status::Custom(rocket::http::Status::NotFound, Json(json!({
+                  status::Custom(rocket::http::Status::BadRequest, Json(json!({
                       "code": 3,
                       "message": format!("voter: {} not found for proposal: {}", voter, proposal_id),
                       "details": []

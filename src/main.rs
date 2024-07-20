@@ -26,6 +26,8 @@ use penumbra_proto::{
         ProposalDataResponse,
         ProposalListRequest,
         ProposalListResponse,
+        ValidatorVotesRequest,
+        ValidatorVotesResponse,
         proposal_state::State as ProposalState,
         proposal_outcome::Outcome,
         proposal_state::Finished,
@@ -303,9 +305,9 @@ fn map_proposal(
     };
 
     let voting_start = latest_block_time
-        + ((latest_block_height - (start_block_height as i64)) as f64) * block_time;
+        - ((latest_block_height - (start_block_height as i64)) as f64) * block_time;
     let voting_end = latest_block_time
-        + ((latest_block_height - (end_block_height as i64)) as f64) * block_time;
+        - ((latest_block_height - (end_block_height as i64)) as f64) * block_time;
 
     json!({
         "proposal_id": proposal_id.to_string(),
@@ -420,6 +422,73 @@ async fn proposals(args: &State<Args>) -> Value {
     })
 }
 
+#[get("/cosmos/gov/v1beta1/proposals/<proposal_id>/votes/<voter>")]
+async fn proposal_vote(proposal_id: u64, voter: &str, args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = GovernanceQueryServiceClient::new(channel.clone());
+    let votes_data: Vec<ValidatorVotesResponse> = client
+        .validator_votes(ValidatorVotesRequest { proposal_id: proposal_id })
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+
+    let validator_vote = votes_data
+        .iter()
+        .find(|&vote| {
+            let identity: IdentityKey = vote.clone().identity_key.unwrap().try_into().unwrap();
+            identity.to_string() == voter
+        });
+
+    match validator_vote {
+        None => json!({
+            "code": 3,
+            "message": format!("voter: {} not found for proposal: {}", voter, proposal_id),
+            "details": []
+        }),
+        Some(vote) => {
+            match &vote.vote {
+                None => json!({
+                    "code": 3,
+                    "message": format!("voter: {} not found for proposal: {}", voter, proposal_id),
+                    "details": []
+                }),
+                Some(option) => {
+                    let vote = match option.vote {
+                        3 => "VOTE_OPTION_NO",
+                        2 => "VOTE_OPTION_YES",
+                        1 => "VOTE_OPTION_YES",
+                        _ => "VOTE_OPTION_UNSPECIFIED"
+                    };
+
+                    json!({
+                        "vote": {
+                          "proposal_id": proposal_id.to_string(),
+                          "voter": voter,
+                          "option": vote,
+                          "options": [
+                            {
+                              "option": vote,
+                              "weight": "1.000000000000000000"
+                            }
+                          ]
+                        }
+                      })
+                }
+            }
+        }
+    }
+}
+
 #[launch]
 fn rocket() -> _ {
     let args = Args::parse();
@@ -441,6 +510,7 @@ fn rocket() -> _ {
                 signing_info,
                 proposals,
                 proposal,
+                proposal_vote,
             ],
         )
 }

@@ -469,8 +469,9 @@ async fn get_vote(voter: &str, proposal_id: u64, args: &State<Args>) -> status::
               },
               Some(option) => {
                   let vote = match option.vote {
+                      4 => "VOTE_OPTION_NO_WITH_VETO",
                       3 => "VOTE_OPTION_NO",
-                      2 => "VOTE_OPTION_YES",
+                      2 => "VOTE_OPTION_ABSTAIN",
                       1 => "VOTE_OPTION_YES",
                       _ => "VOTE_OPTION_UNSPECIFIED"
                   };

@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  mission-control-ci:
+  penumbra-ci:
     runs-on: ubuntu-latest
     steps:
       - name: Check Out Repository

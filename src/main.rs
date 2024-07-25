@@ -2,8 +2,7 @@
 extern crate rocket;
 
 use penumbra_proto::util::tendermint_proxy::v1::SyncInfo;
-use rocket::response::status;
-use rocket::serde::json::{Json, json, Value};
+use rocket::serde::json::{json, Value};
 use rocket::State;
 use clap::Parser;
 use futures::TryStreamExt;
@@ -423,84 +422,72 @@ async fn proposals(args: &State<Args>) -> Value {
     })
 }
 
-
-async fn get_vote(voter: &str, proposal_id: u64, args: &State<Args>) -> status::Custom<Json<Value>> {
-  let channel = Channel::from_shared(args.node.to_string())
-      .unwrap()
-      .tls_config(ClientTlsConfig::new())
-      .unwrap()
-      .connect()
-      .await
-      .unwrap();
-
-  let mut client = GovernanceQueryServiceClient::new(channel.clone());
-  let votes_data: Vec<ValidatorVotesResponse> = client
-      .validator_votes(ValidatorVotesRequest { proposal_id: proposal_id })
-      .await
-      .unwrap()
-      .into_inner()
-      .try_collect::<Vec<_>>()
-      .await
-      .unwrap();
-
-  let validator_vote = votes_data
-      .iter()
-      .find(|&vote| {
-          let identity: IdentityKey = vote.clone().identity_key.unwrap().try_into().unwrap();
-          identity.to_string() == voter
-      });
-
-  let response = match validator_vote {
-      None => {
-          status::Custom(rocket::http::Status::BadRequest, Json(json!({
-              "code": 3,
-              "message": format!("voter: {} not found for proposal: {}", voter, proposal_id),
-              "details": []
-          })))
-      },
-      Some(vote) => {
-          match &vote.vote {
-              None => {
-                  status::Custom(rocket::http::Status::BadRequest, Json(json!({
-                      "code": 3,
-                      "message": format!("voter: {} not found for proposal: {}", voter, proposal_id),
-                      "details": []
-                  })))
-              },
-              Some(option) => {
-                  let vote = match option.vote {
-                      3 => "VOTE_OPTION_NO",
-                      2 => "VOTE_OPTION_YES",
-                      1 => "VOTE_OPTION_YES",
-                      _ => "VOTE_OPTION_UNSPECIFIED"
-                  };
-
-                  status::Custom(rocket::http::Status::Ok, Json(json!({
-                      "vote": {
-                        "proposal_id": proposal_id.to_string(),
-                        "voter": voter,
-                        "option": vote,
-                        "options": [
-                          {
-                            "option": vote,
-                            "weight": "1.000000000000000000"
-                          }
-                        ]
-                      }
-                  })))
-              }
-          }
-      }
-  };
-
-  response
-}
-
 #[get("/cosmos/gov/v1beta1/proposals/<proposal_id>/votes/<voter>")]
-async fn proposal_vote(proposal_id: u64, voter: &str, args: &State<Args>) -> status::Custom<Json<Value>> {
-    get_vote(voter, proposal_id, args).await
-}
+async fn proposal_vote(proposal_id: u64, voter: &str, args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
 
+    let mut client = GovernanceQueryServiceClient::new(channel.clone());
+    let votes_data: Vec<ValidatorVotesResponse> = client
+        .validator_votes(ValidatorVotesRequest { proposal_id: proposal_id })
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+
+    let validator_vote = votes_data
+        .iter()
+        .find(|&vote| {
+            let identity: IdentityKey = vote.clone().identity_key.unwrap().try_into().unwrap();
+            identity.to_string() == voter
+        });
+
+    match validator_vote {
+        None => json!({
+            "code": 3,
+            "message": format!("voter: {} not found for proposal: {}", voter, proposal_id),
+            "details": []
+        }),
+        Some(vote) => {
+            match &vote.vote {
+                None => json!({
+                    "code": 3,
+                    "message": format!("voter: {} not found for proposal: {}", voter, proposal_id),
+                    "details": []
+                }),
+                Some(option) => {
+                    let vote = match option.vote {
+                        3 => "VOTE_OPTION_NO",
+                        2 => "VOTE_OPTION_YES",
+                        1 => "VOTE_OPTION_YES",
+                        _ => "VOTE_OPTION_UNSPECIFIED"
+                    };
+
+                    json!({
+                        "vote": {
+                          "proposal_id": proposal_id.to_string(),
+                          "voter": voter,
+                          "option": vote,
+                          "options": [
+                            {
+                              "option": vote,
+                              "weight": "1.000000000000000000"
+                            }
+                          ]
+                        }
+                      })
+                }
+            }
+        }
+    }
+}
 
 #[launch]
 fn rocket() -> _ {

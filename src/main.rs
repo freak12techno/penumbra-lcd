@@ -1,8 +1,6 @@
 #[macro_use]
 extern crate rocket;
 
-// This change will break the cache
-
 use penumbra_proto::util::tendermint_proxy::v1::SyncInfo;
 use rocket::response::status;
 use rocket::serde::json::{Json, json, Value};

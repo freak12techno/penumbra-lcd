@@ -29,6 +29,8 @@ use penumbra_proto::{
         ProposalListResponse,
         ValidatorVotesRequest,
         ValidatorVotesResponse,
+        AllTalliedDelegatorVotesForProposalRequest,
+        AllTalliedDelegatorVotesForProposalResponse,
         proposal_state::State as ProposalState,
         proposal_outcome::Outcome,
         proposal_state::Finished,
@@ -332,6 +334,43 @@ fn map_proposal(
     })
 }
 
+#[get("/cosmos/gov/v1beta1/proposals/<proposal_id>/tally")]
+async fn proposal_tally(proposal_id: u64, args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = GovernanceQueryServiceClient::new(channel.clone());
+    let tallies: Vec<AllTalliedDelegatorVotesForProposalResponse> = client
+        .all_tallied_delegator_votes_for_proposal(AllTalliedDelegatorVotesForProposalRequest {  proposal_id: proposal_id})
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+
+    let mut total = penumbra_governance::Tally::default();
+
+    for tally in tallies {
+        println!("tally: {:?}", tally);
+        total += tally.tally.unwrap().into();
+    }
+
+    json!({
+        "tally": {
+            "yes": total.yes().to_string(),
+            "no": total.no().to_string(),
+            "abstain": total.abstain().to_string(),
+            "veto": "0"
+        },
+    })
+}
+
 #[get("/cosmos/gov/v1beta1/proposals/<proposal_id>")]
 async fn proposal(proposal_id: u64, args: &State<Args>) -> Value {
     let channel = Channel::from_shared(args.node.to_string())
@@ -524,6 +563,7 @@ fn rocket() -> _ {
                 proposals,
                 proposal,
                 proposal_vote,
+                proposal_tally,
             ],
         )
 }

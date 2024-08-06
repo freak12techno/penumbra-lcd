@@ -357,7 +357,6 @@ async fn proposal_tally(proposal_id: u64, args: &State<Args>) -> Value {
     let mut total = penumbra_governance::Tally::default();
 
     for tally in tallies {
-        println!("tally: {:?}", tally);
         total += tally.tally.unwrap().into();
     }
 

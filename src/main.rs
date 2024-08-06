@@ -144,6 +144,52 @@ async fn validators(status: Option<String>, args: &State<Args>) -> Value {
     })
 }
 
+#[get("/cosmos/staking/v1beta1/pool")]
+async fn pool(args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+       .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = StakeQueryServiceClient::new(channel);
+
+    let validators: Vec<validator::Info> = client
+        .validator_info(ValidatorInfoRequest {
+            show_inactive: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<validator::Info>, _>>()
+        .unwrap();
+
+    let bonded_tokens: u128 = validators.iter()
+        .filter(|validator| validator.status.bonding_state == BondingState::Bonded)
+        .map(|validator| validator.status.voting_power.value())
+        .sum();
+
+    let not_bonded_tokens: u128 = validators.iter()
+        .filter(|validator| validator.status.bonding_state != BondingState::Bonded)
+        .map(|validator| validator.status.voting_power.value())
+        .sum();
+
+    json!({
+        "pool": {
+            "bonded_tokens": bonded_tokens.to_string(),
+            "not_bonded_tokens": not_bonded_tokens.to_string(),
+        }
+    })
+}
+
 #[get("/cosmos/slashing/v1beta1/params")]
 async fn slashing_params(args: &State<Args>) -> Value {
     let channel = Channel::from_shared(args.node.to_string())
@@ -558,6 +604,7 @@ fn rocket() -> _ {
                 validators,
                 staking_params,
                 slashing_params,
+                pool,
                 signing_info,
                 proposals,
                 proposal,

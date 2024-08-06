@@ -411,7 +411,7 @@ async fn proposal_tally(proposal_id: u64, args: &State<Args>) -> Value {
             "yes": total.yes().to_string(),
             "no": total.no().to_string(),
             "abstain": total.abstain().to_string(),
-            "veto": "0"
+            "no_with_veto": "0"
         },
     })
 }

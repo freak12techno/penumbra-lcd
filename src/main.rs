@@ -36,6 +36,7 @@ use penumbra_proto::{
         proposal_state::Finished,
         Proposal,
     },
+    penumbra::core::keys::v1::IdentityKey as ProtoIdentityKey,
     util::tendermint_proxy::v1::{
         tendermint_proxy_service_client::TendermintProxyServiceClient,
         GetStatusRequest,
@@ -297,6 +298,66 @@ async fn signing_info(identity_key: &str, args: &State<Args>) -> Value {
             "tombstoned": false,
             "missed_blocks_counter": missed_blocks.to_string()
         }
+    })
+}
+
+#[get("/cosmos/slashing/v1beta1/signing_infos")]
+async fn signing_infos(args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = StakeQueryServiceClient::new(channel);
+
+    let validators: Vec<validator::Info> = client
+        .validator_info(ValidatorInfoRequest {
+            show_inactive: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<validator::Info>, _>>()
+        .unwrap();
+
+    let mut result: Vec<_> = vec![];
+    for validator in validators {
+        let valcons = validator.validator.consensus_key.to_bech32("penumbravalcons");
+        let identity_key: ProtoIdentityKey = validator.validator.identity_key.into();
+
+        let uptime: Uptime = client
+            .validator_uptime(ValidatorUptimeRequest {
+                identity_key: Option::from(identity_key),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .uptime
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        result.push(json!({
+            "address": valcons,
+            "start_height": "0",
+            "index_offset": "0",
+            "jailed_until": "1970-01-01T00:00:00Z",
+            "tombstoned": false,
+            "missed_blocks_counter": uptime.num_missed_blocks()
+        }));
+    }
+
+    json!({
+        "info": result,
     })
 }
 
@@ -606,6 +667,7 @@ fn rocket() -> _ {
                 slashing_params,
                 pool,
                 signing_info,
+                signing_infos,
                 proposals,
                 proposal,
                 proposal_vote,

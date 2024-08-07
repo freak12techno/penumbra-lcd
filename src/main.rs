@@ -29,11 +29,14 @@ use penumbra_proto::{
         ProposalListResponse,
         ValidatorVotesRequest,
         ValidatorVotesResponse,
+        AllTalliedDelegatorVotesForProposalRequest,
+        AllTalliedDelegatorVotesForProposalResponse,
         proposal_state::State as ProposalState,
         proposal_outcome::Outcome,
         proposal_state::Finished,
         Proposal,
     },
+    penumbra::core::keys::v1::IdentityKey as ProtoIdentityKey,
     util::tendermint_proxy::v1::{
         tendermint_proxy_service_client::TendermintProxyServiceClient,
         GetStatusRequest,
@@ -138,6 +141,52 @@ async fn validators(status: Option<String>, args: &State<Args>) -> Value {
         "pagination": {
             "next_key": null,
             "total": result.len().to_string()
+        }
+    })
+}
+
+#[get("/cosmos/staking/v1beta1/pool")]
+async fn pool(args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+       .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = StakeQueryServiceClient::new(channel);
+
+    let validators: Vec<validator::Info> = client
+        .validator_info(ValidatorInfoRequest {
+            show_inactive: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<validator::Info>, _>>()
+        .unwrap();
+
+    let bonded_tokens: u128 = validators.iter()
+        .filter(|validator| validator.status.bonding_state == BondingState::Bonded)
+        .map(|validator| validator.status.voting_power.value())
+        .sum();
+
+    let not_bonded_tokens: u128 = validators.iter()
+        .filter(|validator| validator.status.bonding_state != BondingState::Bonded)
+        .map(|validator| validator.status.voting_power.value())
+        .sum();
+
+    json!({
+        "pool": {
+            "bonded_tokens": bonded_tokens.to_string(),
+            "not_bonded_tokens": not_bonded_tokens.to_string(),
         }
     })
 }
@@ -252,6 +301,66 @@ async fn signing_info(identity_key: &str, args: &State<Args>) -> Value {
     })
 }
 
+#[get("/cosmos/slashing/v1beta1/signing_infos")]
+async fn signing_infos(args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = StakeQueryServiceClient::new(channel);
+
+    let validators: Vec<validator::Info> = client
+        .validator_info(ValidatorInfoRequest {
+            show_inactive: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<validator::Info>, _>>()
+        .unwrap();
+
+    let mut result: Vec<_> = vec![];
+    for validator in validators {
+        let valcons = validator.validator.consensus_key.to_bech32("penumbravalcons");
+        let identity_key: ProtoIdentityKey = validator.validator.identity_key.into();
+
+        let uptime: Uptime = client
+            .validator_uptime(ValidatorUptimeRequest {
+                identity_key: Option::from(identity_key),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .uptime
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        result.push(json!({
+            "address": valcons,
+            "start_height": "0",
+            "index_offset": "0",
+            "jailed_until": "1970-01-01T00:00:00Z",
+            "tombstoned": false,
+            "missed_blocks_counter": uptime.num_missed_blocks()
+        }));
+    }
+
+    json!({
+        "info": result,
+    })
+}
+
 async fn get_sync_info(channel: Channel) -> SyncInfo {
     let mut tendermint_client = TendermintProxyServiceClient::new(channel.clone());
     let status_data: GetStatusResponse = tendermint_client
@@ -329,6 +438,42 @@ fn map_proposal(
         "total_deposit": [],
         "voting_start_time": DateTime::from_timestamp(voting_start as i64, 0),
         "voting_end_time": DateTime::from_timestamp(voting_end as i64, 0),
+    })
+}
+
+#[get("/cosmos/gov/v1beta1/proposals/<proposal_id>/tally")]
+async fn proposal_tally(proposal_id: u64, args: &State<Args>) -> Value {
+    let channel = Channel::from_shared(args.node.to_string())
+        .unwrap()
+        .tls_config(ClientTlsConfig::new())
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = GovernanceQueryServiceClient::new(channel.clone());
+    let tallies: Vec<AllTalliedDelegatorVotesForProposalResponse> = client
+        .all_tallied_delegator_votes_for_proposal(AllTalliedDelegatorVotesForProposalRequest {  proposal_id: proposal_id})
+        .await
+        .unwrap()
+        .into_inner()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+
+    let mut total = penumbra_governance::Tally::default();
+
+    for tally in tallies {
+        total += tally.tally.unwrap().into();
+    }
+
+    json!({
+        "tally": {
+            "yes": total.yes().to_string(),
+            "no": total.no().to_string(),
+            "abstain": total.abstain().to_string(),
+            "no_with_veto": "0"
+        },
     })
 }
 
@@ -520,10 +665,13 @@ fn rocket() -> _ {
                 validators,
                 staking_params,
                 slashing_params,
+                pool,
                 signing_info,
+                signing_infos,
                 proposals,
                 proposal,
                 proposal_vote,
+                proposal_tally,
             ],
         )
 }
